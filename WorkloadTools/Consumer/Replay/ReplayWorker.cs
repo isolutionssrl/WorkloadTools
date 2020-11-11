@@ -30,9 +30,11 @@ namespace WorkloadTools.Consumer.Replay
         public bool StopOnError { get; set; } = false;
         public string Name { get; set; }
         public int SPID { get; set; }
+        public bool IsRunning { get; private set; } = false;
 
-        private bool isRunning = false;
-        public bool IsRunning { get { return isRunning; } }
+        public DateTime StartTime { get; set; }
+
+        public Dictionary<string, string> DatabaseMap { get; set; } = new Dictionary<string, string>();
 
         private Task runner = null;
         private CancellationTokenSource tokenSource;
@@ -42,6 +44,14 @@ namespace WorkloadTools.Consumer.Replay
             get
             {
                 return !Commands.IsEmpty;
+            }
+        }
+
+        public int QueueLength
+        {
+            get
+            {
+                return Commands.Count;
             }
         }
 
@@ -60,6 +70,7 @@ namespace WorkloadTools.Consumer.Replay
         private SqlTransformer transformer = new SqlTransformer();
 
         private Dictionary<int, int> preparedStatements = new Dictionary<int, int>();
+        private SpinWait _spinWait = new SpinWait();
 
         private enum UserErrorType
         {
@@ -69,11 +80,12 @@ namespace WorkloadTools.Consumer.Replay
 
         private void InitializeConnection()
         {
-            logger.Info(String.Format("Worker [{0}] - Connecting to server {1} for replay...", Name, ConnectionInfo.ServerName));
+            logger.Trace($"Worker [{Name}] - Connecting to server {ConnectionInfo.ServerName} for replay...");
+            ConnectionInfo.DatabaseMap = this.DatabaseMap;
             string connString = BuildConnectionString();
             conn = new SqlConnection(connString);
             conn.Open();
-            logger.Info(String.Format("Worker [{0}] - Connected", Name));
+            logger.Trace($"Worker [{Name}] - Connected");
         }
 
         private string BuildConnectionString()
@@ -94,7 +106,7 @@ namespace WorkloadTools.Consumer.Replay
 
         public void Run()
         {
-            isRunning = true;
+            IsRunning = true;
             while (!stopped)
             {
                 try
@@ -121,15 +133,15 @@ namespace WorkloadTools.Consumer.Replay
         public void Stop(bool withLog)
         {
             if(withLog)
-                logger.Info(String.Format("Worker [{0}] - Stopping", Name));
+                logger.Trace($"Worker [{Name}] - Stopping");
 
             stopped = true;
-            isRunning = false;
+            IsRunning = false;
             if(tokenSource != null)
                 tokenSource.Cancel();
 
             if (withLog)
-                logger.Info(String.Format("Worker [{0}] - Stopped", Name));
+                logger.Trace("Worker [{Name}] - Stopped");
         }
 
 
@@ -151,8 +163,8 @@ namespace WorkloadTools.Consumer.Replay
             {
                 if (stopped)
                     return null;
-
-                Thread.Sleep(10);
+                
+                _spinWait.SpinOnce();
             }
             return result;
         }
@@ -181,7 +193,7 @@ namespace WorkloadTools.Consumer.Replay
                 catch (SqlException se)
                 {
                     logger.Error(se.Message);
-                    logger.Error(String.Format("Worker [{0}] - Unable to acquire the connection. Quitting the ReplayWorker", Name));
+                    logger.Error($"Worker [{Name}] - Unable to acquire the connection. Quitting the ReplayWorker");
                     return;
                 }
             }
@@ -199,10 +211,7 @@ namespace WorkloadTools.Consumer.Replay
 
             if (conn == null || (conn.State == System.Data.ConnectionState.Closed) || (conn.State == System.Data.ConnectionState.Broken))
             {
-                if(conn == null)
-                {
-                    InitializeConnection();
-                }
+                InitializeConnection();
             }
 
 
@@ -235,10 +244,45 @@ namespace WorkloadTools.Consumer.Replay
 
             try
             {
+                // Try to remap the database according to the database map
+                if (DatabaseMap.ContainsKey(command.Database))
+                {
+                    command.Database = DatabaseMap[command.Database];
+                }
+
                 if (conn.Database != command.Database)
                 {
-                    logger.Trace(String.Format("Worker [{0}] - Changing database to {1} ", Name, command.Database));
+                    logger.Trace($"Worker [{Name}] - Changing database to {command.Database} ");
                     conn.ChangeDatabase(command.Database);
+                }
+
+                // if the command comes with a replay offset, do it now
+                // the offset in milliseconds is set in
+                // FileWorkloadListener
+                // The other listeners do not set this value, as they
+                // already come with the original timing
+                if (command.ReplayOffset > 0)
+                {
+                    // I am using 7 here as an average compensation for sleep
+                    // fluctuations due to Windows preemptive scheduling
+                    while((DateTime.Now - StartTime).TotalMilliseconds < command.ReplayOffset - 7)
+                    {
+                        // Thread.Sleep will not sleep exactly 1 millisecond.
+                        // It will yield the current thread and put it back 
+                        // in the runnable queue once the sleep delay has expired.
+                        // This means that the actual sleep time before the 
+                        // current thread gains back control can be much higher 
+                        // (15 milliseconds or more)
+                        // However we do not need to be super precise here: 
+                        // each command has a requested offset from the beginning
+                        // of the workload and this class does its best to respect it.
+                        // If the previous commands take longer in the target environment
+                        // the offset cannot be respected and the command will execute
+                        // without further waits, but there is no way to recover 
+                        // the delay that has built up to that point.
+                        Thread.Sleep(1);
+                    }
+                    
                 }
 
                 using (SqlCommand cmd = new SqlCommand(command.CommandText))
@@ -282,7 +326,7 @@ namespace WorkloadTools.Consumer.Replay
                     }
                 }
 
-                logger.Trace(String.Format("Worker [{0}] - SUCCES - \n{1}", Name, command.CommandText));
+                logger.Trace($"Worker [{Name}] - SUCCES - \n{command.CommandText}");
                 if (commandCount > 0 && commandCount % WorkerStatsCommandCount == 0)
                 {
                     var seconds = (DateTime.Now - previousCPSComputeTime).TotalSeconds;
@@ -295,9 +339,10 @@ namespace WorkloadTools.Consumer.Replay
                         commandsPerSecond.Add((int)cps);
                         cps = commandsPerSecond.Average();
 
-                        logger.Info(String.Format("Worker [{0}] - {1} commands executed.", Name, commandCount));
-                        logger.Info(String.Format("Worker [{0}] - {1} commands pending.", Name, Commands.Count));
-                        logger.Info(String.Format("Worker [{0}] - {1} commands per second.", Name, (int)cps));
+                        logger.Info($"Worker [{Name}] - {commandCount} commands executed.");
+                        logger.Info($"Worker [{Name}] - {Commands.Count} commands pending.");
+                        logger.Info($"Worker [{Name}] - Last Event Sequence: {command.EventSequence}");
+                        logger.Info($"Worker [{Name}] - {(int)cps} commands per second.");
                     }
                 }
             }
@@ -315,13 +360,13 @@ namespace WorkloadTools.Consumer.Replay
 
                 if (StopOnError)
                 {
-                    logger.Error(String.Format("Worker[{0}] - Error: \n{1}", Name, command.CommandText));
+                    logger.Error($"Worker[{Name}] - Sequence[{command.EventSequence}] - Error: \n{command.CommandText}");
                     throw;
                 }
                 else
                 {
-                    logger.Trace(String.Format("Worker [{0}] - Error: {1}", Name, command.CommandText));
-                    logger.Warn(String.Format("Worker [{0}] - Error: {1}", Name, e.Message));
+                    logger.Trace($"Worker [{Name}] - Sequence[{command.EventSequence}] - Error: {command.CommandText}");
+                    logger.Warn($"Worker [{Name}] - Sequence[{command.EventSequence}] - Error: {e.Message}");
                     logger.Trace(e.StackTrace);
                 }
             }
@@ -329,12 +374,12 @@ namespace WorkloadTools.Consumer.Replay
             {
                 if (StopOnError)
                 {
-                    logger.Error(String.Format("Worker[{0}] - Error: \n{1}", Name, command.CommandText));
+                    logger.Error($"Worker[{Name}] - Sequence[{command.EventSequence}] - Error: \n{command.CommandText}");
                     throw;
                 }
                 else
                 {
-                    logger.Error(String.Format("Worker [{0}] - Error: {1}", Name, e.Message));
+                    logger.Error($"Worker [{Name}] - Sequence[{command.EventSequence}] - Error: {e.Message}");
                     logger.Error(e.StackTrace);
                 }
             }
@@ -342,7 +387,7 @@ namespace WorkloadTools.Consumer.Replay
 
         private void RaiseTimeoutEvent(string commandText, SqlConnection conn)
         {
-            RaiseErrorEvent(String.Format("WorkloadTools.Timeout[{0}]", QueryTimeoutSeconds), commandText, UserErrorType.Timeout, conn);
+            RaiseErrorEvent($"WorkloadTools.Timeout[{QueryTimeoutSeconds}]", commandText, UserErrorType.Timeout, conn);
         }
 
 
@@ -351,6 +396,8 @@ namespace WorkloadTools.Consumer.Replay
             string msg = "";
             msg += "DATABASE:" + Environment.NewLine;
             msg += Command.Database + Environment.NewLine;
+            msg += "SEQUENCE:" + Environment.NewLine;
+            msg += Command.EventSequence + Environment.NewLine;
             msg += "MESSAGE:" + Environment.NewLine;
             msg += ErrorMessage + Environment.NewLine;
             msg += "--------------------" + Environment.NewLine;
@@ -365,13 +412,20 @@ namespace WorkloadTools.Consumer.Replay
             // Raise a custom event. Both SqlTrace and Extended Events can capture this event.
             string sql = "EXEC sp_trace_generateevent @eventid = @eventid, @userinfo = @userinfo, @userdata = @userdata;";
 
-            using (SqlCommand cmd = new SqlCommand(sql))
+            try
             {
-                cmd.Connection = conn;
-                cmd.Parameters.AddWithValue("@eventid", type);
-                cmd.Parameters.AddWithValue("@userinfo", info);
-                cmd.Parameters.AddWithValue("@userdata", Encoding.Unicode.GetBytes(message.Substring(0, message.Length > 8000 ? 8000 : message.Length)));
-                cmd.ExecuteNonQuery();
+                using (SqlCommand cmd = new SqlCommand(sql))
+                {
+                    cmd.Connection = conn;
+                    cmd.Parameters.Add(new SqlParameter("@eventid", System.Data.SqlDbType.Int) { Value = type });
+                    cmd.Parameters.Add(new SqlParameter("@userinfo", System.Data.SqlDbType.NVarChar, 128) { Value = info });
+                    cmd.Parameters.Add(new SqlParameter("@userdata", System.Data.SqlDbType.VarBinary, 8000) { Value = Encoding.Unicode.GetBytes(message.Substring(0, message.Length > 8000 ? 8000 : message.Length)) });
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn($"Worker[{Name}] - Unable to raise error event. Message: " + ex.Message);
             }
         }
 
@@ -409,7 +463,7 @@ namespace WorkloadTools.Consumer.Replay
             {
                 while(!(runner.IsCompleted || runner.IsFaulted || runner.IsCanceled))
                 {
-                    Thread.Sleep(5);
+                    _spinWait.SpinOnce();
                 }
                 runner.Dispose();
                 runner = null;
@@ -419,7 +473,7 @@ namespace WorkloadTools.Consumer.Replay
                 tokenSource.Dispose();
                 tokenSource = null;
             }
-            logger.Trace(String.Format("Worker [{0}] - Disposed ", Name));
+            logger.Trace($"Worker [{Name}] - Disposed");
         }
 
     }

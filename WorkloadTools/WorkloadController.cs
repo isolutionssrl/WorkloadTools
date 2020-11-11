@@ -9,7 +9,7 @@ using WorkloadTools.Consumer;
 
 namespace WorkloadTools
 {
-    public class WorkloadController
+    public class WorkloadController : IDisposable
     {
         private static Logger logger = LogManager.GetCurrentClassLogger();
 
@@ -19,6 +19,7 @@ namespace WorkloadTools
         public WorkloadListener Listener { get; set; }
         public List<WorkloadConsumer> Consumers { get; set; } = new List<WorkloadConsumer>();
 
+        private bool forceStopped = false;
         private bool stopped = false;
         private bool disposed = false;
         private const int MAX_DISPOSE_TIMEOUT_SECONDS = 5;
@@ -45,7 +46,7 @@ namespace WorkloadTools
                     try
                     {
                         if ((!Listener.IsRunning) || (endTime < DateTime.Now))
-                            Stop();
+                            stopped = true;
 
                         if (endTime == DateTime.MaxValue && Listener.TimeoutMinutes != 0)
                             endTime = startTime.AddMinutes(Listener.TimeoutMinutes);
@@ -55,7 +56,7 @@ namespace WorkloadTools
                             continue;
                         Parallel.ForEach(Consumers, (cons) =>
                         {
-                            cons.Consume(evt);
+                          cons.Consume(evt);
                         });
                     }
                     catch (Exception e)
@@ -65,13 +66,14 @@ namespace WorkloadTools
                         logger.Error(e.StackTrace);
                     }
                 }
-                if (!disposed)
+
+                // even when the listener has finished, wait until all buffered consumers are finished
+                // unless the controller has been explicitly stopped by invoking Stop()
+                if (!forceStopped)
                 {
-                    disposed = true;
-                    Listener.Dispose();
-                    foreach (var cons in Consumers)
+                    while (Consumers.Where(c => c is BufferedWorkloadConsumer).Any(c => c.HasMoreEvents()))
                     {
-                        cons.Dispose();
+                        Thread.Sleep(10);
                     }
                 }
             }
@@ -89,31 +91,28 @@ namespace WorkloadTools
             }
         }
 
-        public Task Start()
-        {
-            return Task.Factory.StartNew(() => Run());
-        }
+
 
         public void Stop()
         {
+            forceStopped = true;
             stopped = true;
-            int timeout = 0;
-            while(!disposed && timeout < (MAX_DISPOSE_TIMEOUT_SECONDS * 1000))
-            {
-                Thread.Sleep(100);
-                timeout += 100;
-            }
+        }
+
+        public void Dispose()
+        {
             if (!disposed)
             {
                 disposed = true;
-                if(Listener != null)
-                    Listener.Dispose();
-
                 foreach (var cons in Consumers)
                 {
-                    if(cons != null)
+                    if (cons != null)
                         cons.Dispose();
                 }
+
+                if (Listener != null)
+                    Listener.Dispose();
+
             }
         }
 

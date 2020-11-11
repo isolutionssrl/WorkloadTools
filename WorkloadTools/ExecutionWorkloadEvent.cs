@@ -16,8 +16,11 @@ namespace WorkloadTools
         public string HostName { get; set; }
         public long? Reads { get; set; }
         public long? Writes { get; set; }
-        public long? CPU { get; set; }
-        public long? Duration { get; set; }
-
+        public long? CPU { get; set; }      // MICROSECONDS
+        public long? Duration { get; set; } // MICROSECONDS
+        public long? EventSequence { get; set; }
+        // This is the requested offset in milliseconds
+        // from the the beginning of the workload
+        public long ReplayOffset { get; set; } = 0; // MILLISECONDS 
     }
 }

@@ -12,8 +12,30 @@ namespace WorkloadTools.Consumer.Analysis
         private static Logger logger = LogManager.GetCurrentClassLogger();
         private WorkloadAnalyzer analyzer;
 
+        private int _uploadIntervalSeconds;
+
         public SqlConnectionInfo ConnectionInfo { get; set; }
-        public int UploadIntervalSeconds { get; set; }
+        public int UploadIntervalSeconds {
+            get
+            {
+                return _uploadIntervalSeconds;
+            }
+            set
+            {
+                if(value % 60 != 0)
+                {
+                    throw new ArgumentOutOfRangeException("UploadIntervalSeconds must be an exact multiple of 60");
+                }
+                _uploadIntervalSeconds = value;
+            }
+        }
+
+        public int UploadIntervalMinutes
+        {
+            get { return _uploadIntervalSeconds / 60; }
+            set { _uploadIntervalSeconds = value * 60; }
+        }
+
 		public int MaximumWriteRetries { get; set; } = 5;
 
 		public bool SqlNormalizerTruncateTo4000 { get; set; }
@@ -36,10 +58,18 @@ namespace WorkloadTools.Consumer.Analysis
             analyzer.Add(evt);
         }
 
+        public override bool HasMoreEvents()
+        {
+            return analyzer.HasEventsQueued;
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (analyzer != null)
+            {
                 analyzer.Stop();
+                analyzer.Dispose();
+            }
         }
 
     }

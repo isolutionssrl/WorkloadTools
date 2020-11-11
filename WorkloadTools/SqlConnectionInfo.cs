@@ -13,8 +13,11 @@ namespace WorkloadTools
         public bool UseIntegratedSecurity { get; set; }
         public string UserName { get; set; }
         public string Password { get; set; }
+        public bool Encrypt { get; set; } = false;
+        public bool TrustServerCertificate { get; set; } = false;
         public string ApplicationName { get; set; } = "WorkloadTools";
-
+        public Dictionary<string, string> DatabaseMap { get; set;} = new Dictionary<string, string>();
+            
         public string ConnectionString
         {
             get
@@ -26,7 +29,14 @@ namespace WorkloadTools
                 }
                 else
                 {
-                    connectionString += "Initial Catalog = " + DatabaseName + "; ";
+                    // try to replace database name with the name
+                    // in the database map, if any
+                    string effectiveDatabaseName = DatabaseName;
+                    if (DatabaseMap.ContainsKey(DatabaseName))
+                    {
+                        effectiveDatabaseName = DatabaseMap[DatabaseName];
+                    }
+                    connectionString += "Initial Catalog = " + effectiveDatabaseName + "; ";
                 }
                 if (String.IsNullOrEmpty(UserName))
                 {
@@ -40,6 +50,14 @@ namespace WorkloadTools
                 if (!String.IsNullOrEmpty(ApplicationName))
                 {
                     connectionString += "Application Name = "+ ApplicationName +"; ";
+                }
+                if (Encrypt)
+                {
+                    connectionString += "Encrypt = true; ";
+                }
+                if (TrustServerCertificate)
+                {
+                    connectionString += "TrustServerCertificate = true; ";
                 }
                 return connectionString;
             }

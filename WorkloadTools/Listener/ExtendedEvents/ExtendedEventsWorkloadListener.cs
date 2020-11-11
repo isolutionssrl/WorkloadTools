@@ -17,12 +17,16 @@ namespace WorkloadTools.Listener.ExtendedEvents
 
         private SpinWait spin = new SpinWait();
 
+        protected XEventDataReader reader;
+
         public string SessionName { get; set; } = "sqlworkload";
 
         public enum ServerType
         {
             FullInstance,
-            AzureSqlDatabase
+            AzureSqlDatabase,
+            AzureSqlManagedInstance,
+            LocalDB
         }
 
         private ServerType serverType { get; set; }
@@ -31,6 +35,8 @@ namespace WorkloadTools.Listener.ExtendedEvents
         // Mandatory on SqlAzure
         // If not specified, On Premises SQLServer will use the streaming API
         public string FileTargetPath { get; set; }
+
+        private long eventCount;
 
         public ExtendedEventsWorkloadListener() : base()
         {
@@ -42,7 +48,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
         {
             using (SqlConnection conn = new SqlConnection())
             {
-                if(ConnectionInfo == null)
+                if (ConnectionInfo == null)
                 {
                     throw new ArgumentNullException("You need to provide ConnectionInfo to inizialize an ExtendedEventsWorkloadListener");
                 }
@@ -51,13 +57,13 @@ namespace WorkloadTools.Listener.ExtendedEvents
 
                 LoadServerType(conn);
 
-                if(serverType == ServerType.AzureSqlDatabase)
+                if (serverType == ServerType.AzureSqlDatabase)
                 {
                     if (FileTargetPath == null)
                     {
                         throw new ArgumentException("Azure SqlDatabase does not support Extended Events streaming. Please specify a path for the FileTarget");
                     }
-                    if(ConnectionInfo.DatabaseName == null)
+                    if (ConnectionInfo.DatabaseName == null)
                     {
                         throw new ArgumentException("Azure SqlDatabase does not support starting Extended Events sessions on the master database. Please specify a database name.");
                     }
@@ -101,7 +107,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                         filters += ((filters == String.Empty) ? String.Empty : " AND ") + loginFilter;
                     }
 
-                    if(filters != String.Empty)
+                    if (filters != String.Empty)
                     {
                         filters = "WHERE " + filters;
                     }
@@ -109,8 +115,8 @@ namespace WorkloadTools.Listener.ExtendedEvents
                     string sessionType = serverType == ServerType.AzureSqlDatabase ? "DATABASE" : "SERVER";
                     string principalName = serverType == ServerType.AzureSqlDatabase ? "username" : "server_principal_name";
 
-                    sessionSql = String.Format(sessionSql, filters, sessionType, principalName );
-                    
+                    sessionSql = String.Format(sessionSql, filters, sessionType, principalName);
+
                 }
                 catch (Exception e)
                 {
@@ -131,7 +137,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                         ADD TARGET package0.event_file(SET filename=N'{1}',max_file_size=(100))
                     ";
 
-                    sql = String.Format(sql, serverType == ServerType.FullInstance ? "SERVER": "DATABASE" , FileTargetPath, SessionName);
+                    sql = String.Format(sql, serverType == ServerType.FullInstance ? "SERVER" : "DATABASE", FileTargetPath, SessionName);
 
                     using (SqlCommand cmd = conn.CreateCommand())
                     {
@@ -140,7 +146,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                     }
                 }
 
-                
+
                 Task.Factory.StartNew(() => ReadEvents());
 
                 //Initialize the source of performance counters events
@@ -151,7 +157,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
             }
         }
 
-       
+
 
         public override WorkloadEvent Read()
         {
@@ -165,6 +171,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
 
                     spin.SpinOnce();
                 }
+                eventCount++;
                 return result;
             }
             catch (Exception)
@@ -177,11 +184,23 @@ namespace WorkloadTools.Listener.ExtendedEvents
         protected override void Dispose(bool disposing)
         {
             stopped = true;
-            using (SqlConnection conn = new SqlConnection())
+            try
             {
-                conn.ConnectionString = ConnectionInfo.ConnectionString;
-                conn.Open();
-                StopSession(conn);
+                logger.Info($"Disposing ExtendedEventsWorkloadListener.");
+                logger.Debug($"[{eventCount}] events read.");
+                logger.Debug($"Events in the queue? [{Events.HasMoreElements()}]");
+                reader.Stop();
+                using (SqlConnection conn = new SqlConnection())
+                {
+                    conn.ConnectionString = ConnectionInfo.ConnectionString;
+                    conn.Open();
+                    StopSession(conn);
+                }
+            }
+            catch (Exception x)
+            {
+                // swallow
+                logger.Warn($"Error disposing ExtendedEventWorkloadListener: {x.Message}");
             }
             logger.Info($"Extended Events session [{SessionName}] stopped successfully.");
         }
@@ -192,6 +211,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                 DECLARE @condition bit = 0;
 
                 IF SERVERPROPERTY('Edition') = 'SQL Azure'
+                    AND SERVERPROPERTY('EngineEdition') = 5
                 BEGIN
 	                SELECT @condition = 1
 	                WHERE EXISTS (
@@ -228,7 +248,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
 	                END CATCH
                 END
             ";
-            sql = String.Format(sql, serverType == ServerType.FullInstance ? "SERVER" : "DATABASE",SessionName);
+            sql = String.Format(sql, serverType == ServerType.AzureSqlDatabase ? "DATABASE" : "SERVER", SessionName);
             using (SqlCommand cmd = conn.CreateCommand())
             {
                 cmd.CommandText = sql;
@@ -239,11 +259,10 @@ namespace WorkloadTools.Listener.ExtendedEvents
 
         private void ReadEvents()
         {
-            try {
+            try
+            {
 
-                XEventDataReader reader;
-
-                if (serverType == ServerType.FullInstance && FileTargetPath == null)
+                if (serverType != ServerType.AzureSqlDatabase && FileTargetPath == null)
                 {
                     reader = new StreamXEventDataReader(ConnectionInfo.ConnectionString, SessionName, Events);
                 }
@@ -276,18 +295,23 @@ namespace WorkloadTools.Listener.ExtendedEvents
 
 
 
-        
+
 
         private void LoadServerType(SqlConnection conn)
         {
-            string sql = "SELECT SERVERPROPERTY('Edition')";
             using (SqlCommand cmd = conn.CreateCommand())
             {
-                cmd.CommandText = sql;
+                cmd.CommandText = "SELECT SERVERPROPERTY('Edition')";
                 string edition = (string)cmd.ExecuteScalar();
-                if(edition == "SQL Azure")
+                cmd.CommandText = "SELECT SERVERPROPERTY('EngineEdition')";
+                int engineEdition = (int)cmd.ExecuteScalar();
+                if (edition == "SQL Azure")
                 {
                     serverType = ServerType.AzureSqlDatabase;
+                    if (engineEdition == 8)
+                    {
+                        serverType = ServerType.AzureSqlManagedInstance;
+                    }
                 }
                 else
                 {

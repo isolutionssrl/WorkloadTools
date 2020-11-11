@@ -36,7 +36,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                                             ConnectionString,
                                             SessionName,
                                             EventStreamSourceOptions.EventStream,
-                                            EventStreamCacheOptions.DoNotCache))
+                                            EventStreamCacheOptions.CacheToDisk))
             {
 
                 var eventsEnumerator = eventstream.GetEnumerator();
@@ -47,7 +47,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                     ExecutionWorkloadEvent workloadEvent = new ExecutionWorkloadEvent();
                     try
                     {
-
+                        workloadEvent.EventSequence = Convert.ToInt64(TryGetValue(evt, FieldType.Action, "event_sequence"));
                         string commandText = String.Empty;
                         if (evt.Name == "rpc_completed")
                         {
@@ -154,6 +154,7 @@ namespace WorkloadTools.Listener.ExtendedEvents
                             throw;
                         }
 
+                        // preprocess and filter events
                         if (workloadEvent.Type <= WorkloadEvent.EventType.BatchCompleted)
                         {
                             if (transformer.Skip(workloadEvent.Text))

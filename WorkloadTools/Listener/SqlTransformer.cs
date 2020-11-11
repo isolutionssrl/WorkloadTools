@@ -16,6 +16,13 @@ namespace WorkloadTools.Listener
         private static Regex _preppedSqlStatement = new Regex("^(')(?<statement>((?!\\1).|\\1{2})*)\\1", RegexOptions.Compiled | RegexOptions.Singleline);
         private static Regex _doubleApostrophe = new Regex("('')(?<string>.*?)('')", RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.IgnorePatternWhitespace | RegexOptions.CultureInvariant);
 
+        private static MatchEvaluator decimal38Evaluator = new MatchEvaluator(MakeFloat);
+
+        private static string MakeFloat(Match match)
+        {
+            return match.Value + "E0";
+        }
+
 
         public string Transform(string command)
         {
@@ -35,6 +42,26 @@ namespace WorkloadTools.Listener
                 if (!command.EndsWith("EXEC sp_cursorclose @p1;"))
                     command += " ; EXEC sp_cursorclose @p1;";
             }
+
+            //  remove the handle from the sp_cursorprepexec call
+            else if (command.Contains("sp_cursorprepexec "))
+            {
+                command = RemoveFirstP1(command);
+                if (!command.EndsWith("EXEC sp_cursorunprepare @p1;"))
+                    command += " ; EXEC sp_cursorunprepare @p1;";
+            }
+
+
+            // trim numbers with precision > 38
+            // rpc_completed events may return float parameters
+            // as long numeric strings that exceed the maximum decimal
+            // precision of 38. 
+            // Any decimal numeric string in T-SQL is interpreted as decimal,
+            // unless it ends with "E0", which designates a float literal. 
+            // Any decimal numeric string longer than 38 characters needs to
+            // be appended "E0" to be treated as float.
+            command = Regex.Replace(command, @"[0-9\.]{38,}", decimal38Evaluator);
+
             return command;
         }
 
@@ -56,6 +83,10 @@ namespace WorkloadTools.Listener
 
             // skip cursor close
             if (command.Contains("sp_cursorclose "))
+                return true;
+
+            // skip cursor unprepare
+            if (command.Contains("sp_cursorunprepare "))
                 return true;
 
             // skip sp_execute

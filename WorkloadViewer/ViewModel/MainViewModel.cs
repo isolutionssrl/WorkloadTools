@@ -216,7 +216,7 @@ namespace WorkloadViewer.ViewModel
             };
             _baselineWorkloadAnalysis.Load();
 
-            if(_options.BenchmarkServer != null)
+            if(_options.BenchmarkSchema != null)
             {
                 _benchmarkWorkloadAnalysis = new WorkloadAnalysis() { Name = "Benchmark" };
                 _benchmarkWorkloadAnalysis.ConnectionInfo = new SqlConnectionInfo()
@@ -235,13 +235,27 @@ namespace WorkloadViewer.ViewModel
         private void InitializeQueries()
         {
             // Initialize the queries
-           logger.Info("Entering baseline evaluation");
+            logger.Info("Entering baseline evaluation");
+
+            bool zoomIsSet = PlotModels[0].DefaultXAxis != null;
+
+            double xstart = 0;
+            double xend = 0;
+
+            if (zoomIsSet)
+            {
+                xstart = PlotModels[0].DefaultXAxis.ActualMinimum;
+                xend = PlotModels[0].DefaultXAxis.ActualMaximum;
+                if (xstart < 0) xstart = 0;
+            }
 
             var baseline = from t in _baselineWorkloadAnalysis.Points
                            where ApplicationList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.ApplicationName)
                                 && HostList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.HostName)
                                 && DatabaseList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.DatabaseName)
                                 && LoginList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.LoginName)
+                                && (!zoomIsSet || t.OffsetMinutes >= xstart )
+                                && (!zoomIsSet || t.OffsetMinutes <= xend)
                            group t by new
                            {
                                query = t.NormalizedQuery
@@ -250,10 +264,10 @@ namespace WorkloadViewer.ViewModel
                            select new
                            {
                                query = grp.Key.query,
-                               sum_duration_ms = grp.Sum(t => t.SumDurationMs),
-                               avg_duration_ms = grp.Average(t => t.AvgDurationMs),
-                               sum_cpu_ms = grp.Sum(t => t.SumCpuMs),
-                               avg_cpu_ms = grp.Average(t => t.AvgCpuMs),
+                               sum_duration_us = grp.Sum(t => t.SumDurationUs),
+                               avg_duration_us = grp.Average(t => t.AvgDurationUs),
+                               sum_cpu_us = grp.Sum(t => t.SumCpuUs),
+                               avg_cpu_us = grp.Average(t => t.AvgCpuUs),
                                sum_reads = grp.Sum(t => t.SumReads),
                                avg_reads = grp.Average(t => t.AvgReads),
                                execution_count = grp.Sum(t => t.ExecutionCount)
@@ -262,7 +276,7 @@ namespace WorkloadViewer.ViewModel
             logger.Info("Baseline evaluation completed");
             logger.Info("Entering benchmark evaluation");
 
-            var benchmark = from t in baseline where false select new { t.query, t.sum_duration_ms, t.avg_duration_ms, t.sum_cpu_ms, t.avg_cpu_ms, t.sum_reads, t.avg_reads, t.execution_count };
+            var benchmark = from t in baseline where false select new { t.query, t.sum_duration_us, t.avg_duration_us, t.sum_cpu_us, t.avg_cpu_us, t.sum_reads, t.avg_reads, t.execution_count };
 
             if (_benchmarkWorkloadAnalysis != null)
             {
@@ -271,6 +285,8 @@ namespace WorkloadViewer.ViewModel
                                 && HostList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.HostName)
                                 && DatabaseList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.DatabaseName)
                                 && LoginList.Where(f => f.IsChecked).Select(f => f.Name).Contains(t.LoginName)
+                                && (!zoomIsSet || t.OffsetMinutes >= xstart)
+                                && (!zoomIsSet || t.OffsetMinutes <= xend)
                             group t by new
                             {
                                 query = t.NormalizedQuery
@@ -279,10 +295,10 @@ namespace WorkloadViewer.ViewModel
                             select new
                             {
                                 query = grp.Key.query,
-                                sum_duration_ms = grp.Sum(t => t.SumDurationMs),
-                                avg_duration_ms = grp.Average(t => t.AvgDurationMs),
-                                sum_cpu_ms = grp.Sum(t => t.SumCpuMs),
-                                avg_cpu_ms = grp.Average(t => t.AvgCpuMs),
+                                sum_duration_us = grp.Sum(t => t.SumDurationUs),
+                                avg_duration_us = grp.Average(t => t.AvgDurationUs),
+                                sum_cpu_us = grp.Sum(t => t.SumCpuUs),
+                                avg_cpu_us = grp.Average(t => t.AvgCpuUs),
                                 sum_reads = grp.Sum(t => t.SumReads),
                                 avg_reads = grp.Average(t => t.AvgReads),
                                 execution_count = grp.Sum(t => t.ExecutionCount)
@@ -303,19 +319,19 @@ namespace WorkloadViewer.ViewModel
                     query_hash = b.query.Hash,
                     query_text = b.query.ExampleText,
                     query_normalized = b.query.NormalizedText,
-                    b.sum_duration_ms,
-                    b.avg_duration_ms,
-                    b.sum_cpu_ms,
-                    b.avg_cpu_ms,
+                    b.sum_duration_us,
+                    b.avg_duration_us,
+                    b.sum_cpu_us,
+                    b.avg_cpu_us,
                     b.sum_reads,
                     b.avg_reads,
                     b.execution_count,
-                    sum_duration_ms2     = j == null ? 0 : j.sum_duration_ms,
-                    diff_sum_duration_ms = j == null ? 0 : j.sum_duration_ms - b.sum_duration_ms,
-                    avg_duration_ms2     = j == null ? 0 : j.avg_duration_ms,
-                    sum_cpu_ms2          = j == null ? 0 : j.sum_cpu_ms,
-                    diff_sum_cpu_ms      = j == null ? 0 : j.sum_cpu_ms - b.sum_cpu_ms,
-                    avg_cpu_ms2          = j == null ? 0 : j.avg_cpu_ms,
+                    sum_duration_us2     = j == null ? 0 : j.sum_duration_us,
+                    diff_sum_duration_us = j == null ? 0 : j.sum_duration_us - b.sum_duration_us,
+                    avg_duration_us2     = j == null ? 0 : j.avg_duration_us,
+                    sum_cpu_us2          = j == null ? 0 : j.sum_cpu_us,
+                    diff_sum_cpu_us      = j == null ? 0 : j.sum_cpu_us - b.sum_cpu_us,
+                    avg_cpu_us2          = j == null ? 0 : j.avg_cpu_us,
                     sum_reads2           = j == null ? 0 : j.sum_reads,
                     avg_reads2           = j == null ? 0 : j.avg_reads,
                     execution_count2     = j == null ? 0 : j.execution_count,
@@ -332,7 +348,7 @@ namespace WorkloadViewer.ViewModel
             RaisePropertyChanged("CompareModeVisibility");
             RaisePropertyChanged("CompareMode");
 
-            string sortCol = CompareMode ? "diff_sum_duration_ms" : "sum_duration_ms";
+            string sortCol = CompareMode ? "diff_sum_duration_us" : "sum_duration_us";
             var msg = new SortColMessage(sortCol, System.ComponentModel.ListSortDirection.Descending);
             Messenger.Default.Send<SortColMessage>(msg);
         }
@@ -363,6 +379,10 @@ namespace WorkloadViewer.ViewModel
                 // TODO: refreshing should keep zoom and filters
                 InitializeAll();
             }
+            if (e.Key == Key.F8)
+            {
+                ShowConnectionInfoDialog();
+            }
         }
 
 
@@ -377,10 +397,10 @@ namespace WorkloadViewer.ViewModel
         private void InitializeCharts()
         {
             CpuPlotModel = InitializePlotModel();
-            CpuPlotModel.Axes[1].Title = "Cpu (ms)";
+            CpuPlotModel.Axes[1].Title = "Cpu (us)";
             CpuPlotModel.Title = "Cpu";
             CpuPlotModel.Series.Add(LoadCpuSeries(_baselineWorkloadAnalysis, OxyColor.Parse("#01B8AA")));
-            if(_options.BenchmarkServer != null)
+            if(_options.BenchmarkSchema != null)
             {
                 CpuPlotModel.Series.Add(LoadCpuSeries(_benchmarkWorkloadAnalysis, OxyColor.Parse("#000000")));
             }
@@ -389,10 +409,10 @@ namespace WorkloadViewer.ViewModel
             
 
             DurationPlotModel = InitializePlotModel();
-            DurationPlotModel.Axes[1].Title = "Duration (ms)";
+            DurationPlotModel.Axes[1].Title = "Duration (us)";
             DurationPlotModel.Title = "Duration";
             DurationPlotModel.Series.Add(LoadDurationSeries(_baselineWorkloadAnalysis, OxyColor.Parse("#01B8AA")));
-            if (_options.BenchmarkServer != null)
+            if (_options.BenchmarkSchema != null)
             {
                 DurationPlotModel.Series.Add(LoadDurationSeries(_benchmarkWorkloadAnalysis, OxyColor.Parse("#000000")));
             }
@@ -403,7 +423,7 @@ namespace WorkloadViewer.ViewModel
             BatchesPlotModel.Axes[1].Title = "Batches/second";
             BatchesPlotModel.Title = "Batches/second";
             BatchesPlotModel.Series.Add(LoadBatchesSeries(_baselineWorkloadAnalysis, OxyColor.Parse("#01B8AA")));
-            if (_options.BenchmarkServer != null)
+            if (_options.BenchmarkSchema != null)
             {
                 BatchesPlotModel.Series.Add(LoadBatchesSeries(_benchmarkWorkloadAnalysis, OxyColor.Parse("#000000")));
             }
@@ -479,6 +499,8 @@ namespace WorkloadViewer.ViewModel
                     pm.InvalidatePlot(true);
                 }
 
+                InitializeQueries();
+
             }
             finally
             {
@@ -488,6 +510,9 @@ namespace WorkloadViewer.ViewModel
 
         private Series LoadCpuSeries(WorkloadAnalysis analysis, OxyColor color)
         {
+            if (analysis == null)
+                return null;
+
             LineSeries cpuSeries = new LineSeries()
             {
                 StrokeThickness = 2,
@@ -515,7 +540,7 @@ namespace WorkloadViewer.ViewModel
                         select new
                         {
                             offset_minutes = grp.Key.offset,
-                            cpu = grp.Sum(t => t.SumCpuMs)
+                            cpu = grp.Sum(t => t.SumCpuUs)
                         };
 
             foreach (var p in Table)
@@ -528,6 +553,9 @@ namespace WorkloadViewer.ViewModel
 
         private Series LoadDurationSeries(WorkloadAnalysis analysis, OxyColor color)
         {
+            if (analysis == null)
+                return null;
+
             LineSeries durationSeries = new LineSeries()
             {
                 StrokeThickness = 2,
@@ -555,7 +583,7 @@ namespace WorkloadViewer.ViewModel
                         select new
                         {
                             offset_minutes = grp.Key.offset,
-                            duration = grp.Sum(t => t.SumDurationMs)
+                            duration = grp.Sum(t => t.SumDurationUs)
                         };
 
             foreach (var p in Table)
@@ -569,6 +597,9 @@ namespace WorkloadViewer.ViewModel
 
         private Series LoadBatchesSeries(WorkloadAnalysis analysis, OxyColor color)
         {
+            if (analysis == null)
+                return null;
+
             LineSeries batchesSeries = new LineSeries()
             {
                 StrokeThickness = 2,
