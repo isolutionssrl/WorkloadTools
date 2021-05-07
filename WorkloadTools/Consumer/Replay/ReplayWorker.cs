@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using WorkloadTools.Consumer.Analysis;
 using WorkloadTools.Listener;
+using WorkloadTools.Util;
 
 namespace WorkloadTools.Consumer.Replay
 {
@@ -82,16 +83,10 @@ namespace WorkloadTools.Consumer.Replay
         {
             logger.Trace($"Worker [{Name}] - Connecting to server {ConnectionInfo.ServerName} for replay...");
             ConnectionInfo.DatabaseMap = this.DatabaseMap;
-            string connString = BuildConnectionString();
+            string connString = ConnectionInfo.ConnectionString;
             conn = new SqlConnection(connString);
             conn.Open();
             logger.Trace($"Worker [{Name}] - Connected");
-        }
-
-        private string BuildConnectionString()
-        {
-            string connectionString = ConnectionInfo.ConnectionString + "; max pool size=500"; 
-            return connectionString;
         }
 
         public void Start()
@@ -232,7 +227,9 @@ namespace WorkloadTools.Consumer.Replay
                 // look up the statement to unprepare in the dictionary
                 if (preparedStatements.ContainsKey(nst.Handle))
                 {
-                    command.CommandText = nst.NormalizedText + " " + preparedStatements[nst.Handle];
+                    // the sp_execute statement has already been "normalized"
+                    // by replacing the original statement number with the § placeholder
+                    command.CommandText = nst.NormalizedText.ReplaceFirst("§", preparedStatements[nst.Handle].ToString());
 
                     if (nst.CommandType == NormalizedSqlText.CommandTypeEnum.SP_UNPREPARE)
                         preparedStatements.Remove(nst.Handle);
